@@ -1,5 +1,6 @@
 # ================================================================
-# 📈 ADVANCED TRADING ADVICE & PREDICTION SYSTEM (ALL-IN-ONE)
+# 📉 ADVANCED FINANCIAL ADVISOR + TRADING SIGNAL SYSTEM
+# Streamlit Version — Optimized & Fixed
 # ================================================================
 
 import streamlit as st
@@ -12,32 +13,27 @@ from xgboost import XGBRegressor
 from sklearn.model_selection import train_test_split
 import plotly.graph_objects as go
 
-# ------------ STREAMLIT BASIC CONFIG ------------
+# ---------------- Streamlit Config ----------------
 st.set_page_config(page_title="Advanced Trading Advisor", layout="wide")
 st.title("📊 Advanced Trading Advice & Prediction Engine")
 
-# ------------ TECHNICAL INDICATORS ------------
+# ---------------- CACHING for Performance ----------------
+
+@st.cache_data
+def get_stock_data(ticker, start, end):
+    return yf.download(ticker, start=start, end=end, progress=False)
+
+@st.cache_data
 def compute_indicators(df):
-    """
-    Compute a set of technical indicators:
-    - SMA (20 & 50)
-    - EMA (12 & 26)
-    - MACD & signal line
-    - RSI (correct 1-D implementation)
-    """
-    # Simple Moving Averages
     df["SMA20"] = df["Close"].rolling(window=20, min_periods=20).mean()
     df["SMA50"] = df["Close"].rolling(window=50, min_periods=50).mean()
 
-    # Exponential Moving Averages
     df["EMA12"] = df["Close"].ewm(span=12, adjust=False).mean()
     df["EMA26"] = df["Close"].ewm(span=26, adjust=False).mean()
 
-    # MACD
     df["MACD"] = df["EMA12"] - df["EMA26"]
     df["SignalLine"] = df["MACD"].ewm(span=9, adjust=False).mean()
 
-    # RSI: Uses exponential smoothing approach to avoid 2-D error
     delta = df["Close"].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -47,38 +43,28 @@ def compute_indicators(df):
     rs = avg_gain / avg_loss
     df["RSI"] = 100 - (100 / (1 + rs))
 
-    # Drop early rows where values are NaN
     df.dropna(inplace=True)
     return df
 
-# ------------ MACHINE LEARNING MODEL TRAINING ------------
+@st.cache_resource
 def train_models(df):
-    """
-    Train an ensemble of ML models on engineered features.
-    """
-    features = df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]
-    labels = df["Close"].shift(-1).fillna(method="ffill")
+    X = df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]
+    y = df["Close"].shift(-1).fillna(method="ffill")
 
-    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, shuffle=False)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-    rf_model = RandomForestRegressor(n_estimators=300, random_state=42)
-    xgb_model = XGBRegressor(n_estimators=400, learning_rate=0.05, subsample=0.8, random_state=42)
+    rf = RandomForestRegressor(n_estimators=300, random_state=42)
+    xgb = XGBRegressor(n_estimators=300, learning_rate=0.05, random_state=42)
 
-    rf_model.fit(X_train, y_train)
-    xgb_model.fit(X_train, y_train)
+    rf.fit(X_train, y_train)
+    xgb.fit(X_train, y_train)
+    return rf, xgb
 
-    return rf_model, xgb_model
+# ---------------- SIGNAL LOGIC ----------------
 
-def predict_next(rf, xgb, feature_row):
-    pred_rf = rf.predict(feature_row.values.reshape(1, -1))[0]
-    pred_xgb = xgb.predict(feature_row.values.reshape(1, -1))[0]
-    combined = (pred_rf + pred_xgb) / 2
-    return pred_rf, pred_xgb, combined
-
-# ------------ SIGNAL GENERATION LOGIC ------------
 def generate_signal(current, predicted):
-    diff = predicted - current
-    pct = (diff / current) * 100
+    diff = float(predicted - current)  # scalar not Series
+    pct = (diff / float(current)) * 100
 
     if pct > 4:
         return "STRONG BUY", pct
@@ -88,66 +74,65 @@ def generate_signal(current, predicted):
         return "STRONG SELL", pct
     elif pct < -2:
         return "SELL", pct
-    else:
-        return "HOLD", pct
+    return "HOLD", pct
 
-# ------------ USER INTERFACE ------------
-st.sidebar.header("📌 Config Options")
-ticker = st.sidebar.text_input("Enter Ticker Symbol", value="AAPL")
-start_date = st.sidebar.date_input("Start Date", value=datetime(2022, 1, 1))
+# ---------------- UI INTERFACE ----------------
+
+st.sidebar.header("⚙️ Configuration")
+ticker = st.sidebar.text_input("Ticker Symbol", value="AAPL")
+start_date = st.sidebar.date_input("Start Date", value=datetime(2022,1,1))
 end_date = st.sidebar.date_input("End Date", value=datetime.today())
+
 if start_date >= end_date:
     st.sidebar.error("Start date must be before end date")
 
-if st.sidebar.button("Run Analysis"):
-    with st.spinner("Fetching market data and running models..."):
-        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-        
+if st.sidebar.button("Analyze"):
+    with st.spinner("Fetching data and computing..."):
+        data = get_stock_data(ticker, start_date, end_date)
+
         if data.empty:
-            st.error("❌ No market data found for that ticker.")
+            st.error("No data found. Try a different ticker or range.")
         else:
             df = compute_indicators(data)
-
-            # Train models
             rf_model, xgb_model = train_models(df)
 
-            # Latest features
             latest = df.iloc[-1]
             current_price = latest["Close"]
-            pred_rf, pred_xgb, combined_pred = predict_next(rf_model, xgb_model, latest[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]])
 
-            signal, confidence = generate_signal(current_price, combined_pred)
+            features = latest[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]
+            pred_rf = float(rf_model.predict([features])[0])
+            pred_xgb = float(xgb_model.predict([features])[0])
+            combined = (pred_rf + pred_xgb) / 2
 
-            # Display metrics
-            st.metric("📊 Current Price", f"${current_price:,.2f}")
-            st.metric("📈 RF Prediction", f"${pred_rf:,.2f}")
-            st.metric("📈 XGB Prediction", f"${pred_xgb:,.2f}")
-            st.metric("📈 Combined Prediction", f"${combined_pred:,.2f}")
-            st.metric("💡 Trade Signal", f"{signal} ({confidence:.2f}%)")
+            signal, conf = generate_signal(current_price, combined)
 
-            # Basic backtest summary
-            df["PredictedNext"] = df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]].apply(
-                lambda row: (rf_model.predict(row.values.reshape(1, -1))[0] + 
-                             xgb_model.predict(row.values.reshape(1, -1))[0]) / 2, axis=1)
+            st.metric("Current Close Price", f"${current_price:,.2f}")
+            st.metric("RandomForest Prediction", f"${pred_rf:,.2f}")
+            st.metric("XGBoost Prediction", f"${pred_xgb:,.2f}")
+            st.metric("Combined Forecast", f"${combined:,.2f}")
+            st.metric("Trade Signal", f"{signal} ({conf:.2f}% move)")
 
-            df["StrategyReturn"] = np.where(df["PredictedNext"] > df["Close"],
-                                            df["Close"].pct_change(),
-                                            -df["Close"].pct_change())
+            df["Predicted"] = (rf_model.predict(df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]) + 
+                                xgb_model.predict(df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]))/2
 
-            backtest_results = {
-                "TotalReturn": f"{(df['StrategyReturn'] + 1).prod() - 1:.2%}",
+            df["StrategyReturn"] = np.where(df["Predicted"] > df["Close"],
+                                             df["Close"].pct_change(),
+                                             -df["Close"].pct_change())
+
+            backtest_summary = {
+                "TotalReturn": f"{(df['StrategyReturn']+1).prod() - 1:.2%}",
                 "AvgDailyReturn": f"{df['StrategyReturn'].mean():.4%}",
                 "Volatility": f"{df['StrategyReturn'].std():.4%}"
             }
-            st.write("📊 Simple Strategy Backtest Results", backtest_results)
 
-            # Plot price + indicators
+            st.write("📊 Backtest Summary", backtest_summary)
+
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close Price"))
+            fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close"))
             fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], name="SMA20"))
             fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA50"))
             st.plotly_chart(fig, use_container_width=True)
 
-            st.success("✅ Analysis complete!")
+            st.success("Analysis complete! 👍")
 
-st.caption("📉 Powered by Yahoo Finance and ML models. This is a demo and not financial advice.")
+st.caption("*Powered by Yahoo Finance. Not financial advice.*")
