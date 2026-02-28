@@ -1,6 +1,5 @@
 # ================================================================
-# 📉 ADVANCED FINANCIAL ADVISOR + TRADING SIGNAL SYSTEM
-# Streamlit Version — Optimized & Fixed
+# 📈 ADVANCED TRADING ADVICE + SIGNAL SYSTEM (Optimized & Fixed)
 # ================================================================
 
 import streamlit as st
@@ -25,15 +24,19 @@ def get_stock_data(ticker, start, end):
 
 @st.cache_data
 def compute_indicators(df):
+    # Simple Moving Averages
     df["SMA20"] = df["Close"].rolling(window=20, min_periods=20).mean()
     df["SMA50"] = df["Close"].rolling(window=50, min_periods=50).mean()
 
+    # Exponential Moving Averages
     df["EMA12"] = df["Close"].ewm(span=12, adjust=False).mean()
     df["EMA26"] = df["Close"].ewm(span=26, adjust=False).mean()
 
+    # MACD and Signal
     df["MACD"] = df["EMA12"] - df["EMA26"]
     df["SignalLine"] = df["MACD"].ewm(span=9, adjust=False).mean()
 
+    # RSI (safe 1-D pandas approach)
     delta = df["Close"].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -53,17 +56,17 @@ def train_models(df):
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-    rf = RandomForestRegressor(n_estimators=300, random_state=42)
-    xgb = XGBRegressor(n_estimators=300, learning_rate=0.05, random_state=42)
+    rf_model = RandomForestRegressor(n_estimators=300, random_state=42)
+    xgb_model = XGBRegressor(n_estimators=300, learning_rate=0.05, random_state=42)
 
-    rf.fit(X_train, y_train)
-    xgb.fit(X_train, y_train)
-    return rf, xgb
+    rf_model.fit(X_train, y_train)
+    xgb_model.fit(X_train, y_train)
+    return rf_model, xgb_model
 
-# ---------------- SIGNAL LOGIC ----------------
+# ---------------- SIGNAL GENERATION ----------------
 
 def generate_signal(current, predicted):
-    diff = float(predicted - current)  # scalar not Series
+    diff = float(predicted - current)
     pct = (diff / float(current)) * 100
 
     if pct > 4:
@@ -74,24 +77,26 @@ def generate_signal(current, predicted):
         return "STRONG SELL", pct
     elif pct < -2:
         return "SELL", pct
-    return "HOLD", pct
+    else:
+        return "HOLD", pct
 
-# ---------------- UI INTERFACE ----------------
+# ---------------- USER INTERFACE ----------------
 
-st.sidebar.header("⚙️ Configuration")
+st.sidebar.header("⚙️ Configurations")
 ticker = st.sidebar.text_input("Ticker Symbol", value="AAPL")
-start_date = st.sidebar.date_input("Start Date", value=datetime(2022,1,1))
+start_date = st.sidebar.date_input("Start Date", value=datetime(2022, 1, 1))
 end_date = st.sidebar.date_input("End Date", value=datetime.today())
 
 if start_date >= end_date:
     st.sidebar.error("Start date must be before end date")
 
 if st.sidebar.button("Analyze"):
-    with st.spinner("Fetching data and computing..."):
+    with st.spinner("Fetching data and running models..."):
+
         data = get_stock_data(ticker, start_date, end_date)
 
         if data.empty:
-            st.error("No data found. Try a different ticker or range.")
+            st.error("❌ No data found. Try another ticker.")
         else:
             df = compute_indicators(data)
             rf_model, xgb_model = train_models(df)
@@ -104,35 +109,39 @@ if st.sidebar.button("Analyze"):
             pred_xgb = float(xgb_model.predict([features])[0])
             combined = (pred_rf + pred_xgb) / 2
 
-            signal, conf = generate_signal(current_price, combined)
+            signal, confidence = generate_signal(current_price, combined)
 
-            st.metric("Current Close Price", f"${current_price:,.2f}")
-            st.metric("RandomForest Prediction", f"${pred_rf:,.2f}")
-            st.metric("XGBoost Prediction", f"${pred_xgb:,.2f}")
-            st.metric("Combined Forecast", f"${combined:,.2f}")
-            st.metric("Trade Signal", f"{signal} ({conf:.2f}% move)")
+            # Safe Display of Metrics
+            st.write(f"**Current Close Price:** ${current_price:,.2f}")
+            st.write(f"**RandomForest Prediction:** ${pred_rf:,.2f}")
+            st.write(f"**XGBoost Prediction:** ${pred_xgb:,.2f}")
+            st.write(f"**Combined Forecast:** ${combined:,.2f}")
+            st.write(f"**Trade Signal:** {signal} ({confidence:.2f}% forecast change)")
 
-            df["Predicted"] = (rf_model.predict(df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]) + 
-                                xgb_model.predict(df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]))/2
+            # ==== Simple Backtest Summary ====
+            df["Predicted"] = (
+                rf_model.predict(df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]]) +
+                xgb_model.predict(df[["SMA20","SMA50","EMA12","EMA26","MACD","SignalLine","RSI"]])
+            ) / 2
 
             df["StrategyReturn"] = np.where(df["Predicted"] > df["Close"],
                                              df["Close"].pct_change(),
                                              -df["Close"].pct_change())
 
             backtest_summary = {
-                "TotalReturn": f"{(df['StrategyReturn']+1).prod() - 1:.2%}",
+                "TotalReturn": f"{(df['StrategyReturn'] + 1).prod() - 1:.2%}",
                 "AvgDailyReturn": f"{df['StrategyReturn'].mean():.4%}",
                 "Volatility": f"{df['StrategyReturn'].std():.4%}"
             }
 
-            st.write("📊 Backtest Summary", backtest_summary)
+            st.write("📊 Simple Strategy Backtest Summary:", backtest_summary)
 
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close"))
+            fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close Price"))
             fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], name="SMA20"))
             fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], name="SMA50"))
             st.plotly_chart(fig, use_container_width=True)
 
-            st.success("Analysis complete! 👍")
+            st.success("✅ Analysis complete!")
 
-st.caption("*Powered by Yahoo Finance. Not financial advice.*")
+st.caption("*Powered by Yahoo Finance & ensemble ML models — not financial advice.*")
