@@ -1,130 +1,139 @@
 # ================================================================
-# 📊 SUPER COMPLEX TRADING ADVICE SYSTEM — STREAMLIT DASHBOARD
+# 📈 ADVANCED TRADING ADVICE + SIGNAL + BACKTEST SYSTEM
+# A single all-in-one Streamlit app
 # ================================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from datetime import datetime
 from sklearn.ensemble import RandomForestRegressor
 from xgboost import XGBRegressor
 from sklearn.model_selection import train_test_split
 import plotly.graph_objects as go
-import datetime
 
+# ---------------- Streamlit Config ----------------
 st.set_page_config(page_title="Advanced Trading Advisor", layout="wide")
-st.title("📈 Advanced Trading Advice & Prediction System")
+st.title("📊 Advanced Trading Advice & Prediction Engine")
 
-# ========== Fetch Data ==========
+# ---------------- Technical Indicators ----------------
 
-def load_price_data(ticker, period="2y", interval="1d"):
-    try:
-        data = yf.download(ticker, period=period, interval=interval)
-        data.dropna(inplace=True)
-        return data
-    except Exception as e:
-        st.error(f"Failed to fetch data: {e}")
-        return pd.DataFrame()
-
-# ========== Feature Engineering ==========
-
-def compute_technical_indicators(df):
+def compute_indicators(df):
+    # Moving Averages
     df["MA20"] = df["Close"].rolling(window=20).mean()
     df["MA50"] = df["Close"].rolling(window=50).mean()
-    df["RSI"] = compute_rsi(df["Close"])
-    df["Return"] = df["Close"].pct_change()
+    df["EMA12"] = df["Close"].ewm(span=12, adjust=False).mean()
+    df["EMA26"] = df["Close"].ewm(span=26, adjust=False).mean()
+
+    # MACD
+    df["MACD"] = df["EMA12"] - df["EMA26"]
+    df["SignalLine"] = df["MACD"].ewm(span=9, adjust=False).mean()
+
+    # RSI
+    delta = df["Close"].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=14).mean()
+    avg_loss = pd.Series(loss).rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
+
     df.dropna(inplace=True)
     return df
 
-def compute_rsi(series, period=14):
-    delta = series.diff().dropna()
-    up = delta.clip(lower=0)
-    down = -1 * delta.clip(upper=0)
-    ema_up = up.ewm(com=period - 1, adjust=False).mean()
-    ema_down = down.ewm(com=period - 1, adjust=False).mean()
-    rs = ema_up / ema_down
-    return 100 - (100 / (1 + rs))
+# ---------------- ML Training ----------------
 
-# ========== Models & Training ==========
+def build_models(df):
+    X = df[["MA20","MA50","EMA12","EMA26","MACD","SignalLine","RSI"]]
+    y = df["Close"].shift(-1).fillna(method="ffill")
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-def train_models(df):
-    X = df[["MA20", "MA50", "RSI"]].values
-    y = df["Close"].shift(-1).fillna(method="ffill").values
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
-
-    rf = RandomForestRegressor(n_estimators=200, random_state=42)
-    xgb = XGBRegressor(n_estimators=300, learning_rate=0.05, random_state=42)
+    rf = RandomForestRegressor(n_estimators=300, random_state=42)
+    xgb = XGBRegressor(n_estimators=400, learning_rate=0.05, subsample=0.8, random_state=42)
 
     rf.fit(X_train, y_train)
     xgb.fit(X_train, y_train)
 
-    return rf, xgb, X_test, y_test
+    return rf, xgb
 
-# ========== Prediction Logic ==========
+def predict_next(rf, xgb, features):
+    pred_rf = rf.predict(features.values.reshape(1,-1))[0]
+    pred_xgb = xgb.predict(features.values.reshape(1,-1))[0]
+    combined = (pred_rf + pred_xgb)/2
+    return pred_rf, pred_xgb, combined
 
-def make_prediction(models, latest_features):
-    rf, xgb = models
-    pred_rf = rf.predict(latest_features.reshape(1, -1))[0]
-    pred_xgb = xgb.predict(latest_features.reshape(1, -1))[0]
-    combined_pred = (pred_rf + pred_xgb) / 2
-    return pred_rf, pred_xgb, combined_pred
+# ---------------- Signal Logic ----------------
 
-# ========== Advice Logic ==========
-
-def generate_signal(current_price, predicted_price):
-    diff = predicted_price - current_price
-    pct = (diff / current_price) * 100
-
-    if pct > 3:
+def trade_signal(current, predicted):
+    diff = predicted - current
+    pct = (diff/current)*100
+    if pct > 4:
         return "STRONG BUY", pct
-    elif pct > 1:
+    elif pct > 2:
         return "BUY", pct
-    elif pct < -3:
+    elif pct < -4:
         return "STRONG SELL", pct
-    elif pct < -1:
+    elif pct < -2:
         return "SELL", pct
+    return "HOLD", pct
+
+# ---------------- UI Inputs ----------------
+
+st.sidebar.header("📍 Configurations")
+ticker = st.sidebar.text_input("Ticker (e.g., AAPL)", value="AAPL")
+start = st.sidebar.date_input("Start Date", value=datetime(2022,1,1))
+end = st.sidebar.date_input("End Date", value=datetime.today())
+if start >= end:
+    st.sidebar.error("Start must be before End")
+
+if st.sidebar.button("Run Analysis"):
+    # -- Load Data --
+    df = yf.download(ticker, start=start, end=end, progress=False)
+    if df.empty:
+        st.error("No data found. Check ticker or date range.")
     else:
-        return "HOLD", pct
+        df = compute_indicators(df)
 
-# ========== Streamlit UI ==========
+        # -- Model Training --
+        rf_model, xgb_model = build_models(df)
+        latest_features = df.iloc[-1][["MA20","MA50","EMA12","EMA26","MACD","SignalLine","RSI"]]
 
-ticker = st.text_input("📌 Enter Ticker Symbol (e.g., AAPL)", "AAPL")
-period = st.selectbox("📆 Data Period", ["1y","2y","5y"])
-interval = st.selectbox("⏱ Interval", ["1d","1wk","1mo"])
+        # -- Predictions --
+        rfp, xgbp, combined = predict_next(rf_model, xgb_model, latest_features)
+        current_price = df["Close"].iloc[-1]
+        sig, conf = trade_signal(current_price, combined)
 
-if st.button("Analyze"):
-    with st.spinner("⏳ Fetching and computing..."):
-        data = load_price_data(ticker, period, interval)
-        if data.empty:
-            st.warning("No data available for this ticker!")
-        else:
-            df = compute_technical_indicators(data)
-            models = train_models(df)
-            latest_features = df[["MA20", "MA50", "RSI"]].iloc[-1].values
+        # -- Metrics --
+        st.metric("Current Price", f"${current_price:,.2f}")
+        st.metric("RandomForest Pred", f"${rfp:,.2f}")
+        st.metric("XGBoost Pred", f"${xgbp:,.2f}")
+        st.metric("Combined Price", f"${combined:,.2f}")
+        st.metric("Signal", f"{sig} ({conf:.2f}%)")
 
-            # Predictions
-            pred_rf, pred_xgb, combined = make_prediction(models, latest_features)
-            current_price = df["Close"].iloc[-1]
+        # -- Backtest Table Snippet --
+        df["PredNext"] = df[["MA20","MA50","EMA12","EMA26","MACD","SignalLine","RSI"]].apply(
+            lambda row: (rf_model.predict(row.values.reshape(1,-1))[0] + 
+                         xgb_model.predict(row.values.reshape(1,-1))[0])/2, axis=1)
+        df["StrategyReturn"] = np.where(df["PredNext"] > df["Close"], 
+                                        df["Close"].pct_change(), 
+                                        -df["Close"].pct_change())
+        stats = {
+            "TotalReturn": f"{(df['StrategyReturn']+1).prod()-1:.2%}",
+            "AvgDailyReturn": f"{df['StrategyReturn'].mean():.4%}",
+            "Volatility": f"{df['StrategyReturn'].std():.4%}"
+        }
+        st.write("📊 Backtest Overview (simple strategy):", stats)
 
-            signal, confidence = generate_signal(current_price, combined)
+        # -- Price + Indicators Plot --
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close"))
+        fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="MA20"))
+        fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], name="MA50"))
+        fig.update_layout(title=f"{ticker} Price + Moving Averages")
+        st.plotly_chart(fig, use_container_width=True)
 
-            # Display Metrics
-            st.metric("Current Price", f"${current_price:,.2f}")
-            st.metric("RF Predicted Price", f"${pred_rf:,.2f}")
-            st.metric("XGB Predicted Price", f"${pred_xgb:,.2f}")
-            st.metric("Combined Prediction", f"${combined:,.2f}")
-            st.metric("Trade Signal", f"{signal} ({confidence:.2f}% change)")
+        st.success("Analysis complete!")
 
-            # Plot Price + Indicators
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close Price"))
-            fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="MA20"))
-            fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], name="MA50"))
-            st.plotly_chart(fig, use_container_width=True)
-
-            # Confidence Explanation
-            st.info(
-                f"⚡ The system uses combined predictions from RandomForest and XGBoost "
-                f"trained on technical indicators (MA20, MA50, RSI). Predictions are not financial advice."
-            )
+# ---------------- Footer ----------------
+st.caption("Powered by Yahoo Finance & ML ensemble models. Not financial advice.")
